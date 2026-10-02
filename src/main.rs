@@ -1,3 +1,4 @@
+mod terminal;
 mod usb;
 
 use std::io::{self, Write};
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
     println!();
     println!("Claiming interface {}...", target.interface_number);
 
-    let _interface = match usb::claim_bulk_target(&device, target) {
+    let interface = match usb::claim_bulk_target(&device, target) {
         Ok(interface) => interface,
 
         Err(err) => {
@@ -117,6 +118,8 @@ fn main() -> Result<()> {
     println!("  Alt       : {}", target.alternate_setting);
     println!("  Bulk IN   : 0x{:02x}", in_endpoint.address);
     println!("  Bulk OUT  : 0x{:02x}", out_endpoint.address);
+
+    terminal::run_hex_terminal(&interface, in_endpoint, out_endpoint)?;
 
     Ok(())
 }
