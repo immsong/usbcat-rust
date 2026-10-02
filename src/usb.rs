@@ -1,5 +1,26 @@
 use anyhow::{Context, Result};
-use nusb::{Device, DeviceInfo, MaybeFuture, descriptors::ConfigurationDescriptor};
+use nusb::{
+    Device, DeviceInfo, Interface, MaybeFuture,
+    descriptors::{ConfigurationDescriptor, TransferType},
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct BulkEndpoint {
+    pub address: u8,
+    pub max_packet_size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BulkTarget {
+    pub interface_number: u8,
+    pub alternate_setting: u8,
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+
+    pub in_endpoints: Vec<BulkEndpoint>,
+    pub out_endpoints: Vec<BulkEndpoint>,
+}
 
 pub fn list_devices() -> Result<Vec<DeviceInfo>> {
     let devices = nusb::list_devices()
@@ -132,4 +153,109 @@ fn class_name(class: u8) -> &'static str {
         0xff => " (Vendor Specific)",
         _ => "",
     }
+}
+
+pub fn find_bulk_targets(device: &Device) -> Result<Vec<BulkTarget>> {
+    let config = device
+        .active_configuration()
+        .context("failed to get active USB configuration")?;
+
+    let mut targets = Vec::new();
+
+    for interface in config.interface_alt_settings() {
+        let mut in_endpoints = Vec::new();
+        let mut out_endpoints = Vec::new();
+
+        for endpoint in interface.endpoints() {
+            if endpoint.transfer_type() != TransferType::Bulk {
+                continue;
+            }
+
+            let endpoint = BulkEndpoint {
+                address: endpoint.address(),
+                max_packet_size: usize::from(endpoint.max_packet_size()),
+            };
+
+            if endpoint.address & 0x80 != 0 {
+                in_endpoints.push(endpoint);
+            } else {
+                out_endpoints.push(endpoint);
+            }
+        }
+
+        if in_endpoints.is_empty() || out_endpoints.is_empty() {
+            continue;
+        }
+
+        targets.push(BulkTarget {
+            interface_number: interface.interface_number(),
+            alternate_setting: interface.alternate_setting(),
+            class: interface.class(),
+            subclass: interface.subclass(),
+            protocol: interface.protocol(),
+            in_endpoints,
+            out_endpoints,
+        });
+    }
+
+    Ok(targets)
+}
+
+pub fn print_bulk_target(index: usize, target: &BulkTarget) {
+    println!(
+        "[{index}] Interface {} / Alt {}",
+        target.interface_number, target.alternate_setting,
+    );
+
+    println!(
+        "    Class    : 0x{:02x}{}",
+        target.class,
+        class_name(target.class),
+    );
+
+    println!("    Subclass : 0x{:02x}", target.subclass);
+    println!("    Protocol : 0x{:02x}", target.protocol);
+
+    print!("    Bulk IN  :");
+
+    for endpoint in &target.in_endpoints {
+        print!(
+            " 0x{:02x} (max={})",
+            endpoint.address, endpoint.max_packet_size,
+        );
+    }
+
+    println!();
+
+    print!("    Bulk OUT :");
+
+    for endpoint in &target.out_endpoints {
+        print!(
+            " 0x{:02x} (max={})",
+            endpoint.address, endpoint.max_packet_size,
+        );
+    }
+
+    println!();
+}
+
+pub fn claim_bulk_target(device: &Device, target: &BulkTarget) -> Result<Interface> {
+    let interface = device
+        .claim_interface(target.interface_number)
+        .wait()
+        .with_context(|| format!("failed to claim interface {}", target.interface_number))?;
+
+    if target.alternate_setting != 0 {
+        interface
+            .set_alt_setting(target.alternate_setting)
+            .wait()
+            .with_context(|| {
+                format!(
+                    "failed to select alternate setting {} on interface {}",
+                    target.alternate_setting, target.interface_number,
+                )
+            })?;
+    }
+
+    Ok(interface)
 }
